@@ -30,11 +30,17 @@ main (int argc, char **argv)
   word_t word;
   int argn = 1;
   int raw_format = 0;
+  int rel_format = 0;
 
   if (strcmp (argv[argn], "-r") == 0)
     {
       argn++;
       raw_format = 1;
+    }
+  else if (strcmp (argv[argn], "-R") == 0)
+    {
+      argn++;
+      rel_format = 1;
     }
 
   if (argn != argc - 1)
@@ -57,6 +63,8 @@ main (int argc, char **argv)
   rewind_word (file);
   if (raw_format)
     read_raw (file, &memory, cpu_model);
+  else if (rel_format)
+    read_rel (file, &memory, cpu_model);
   else if (word == 0)
     read_pdump (file, &memory, cpu_model);
   else
