@@ -23,6 +23,8 @@
 #define FILE2_OCT  0164651544516LL /* .FILE. */
 #define DIR_OCT    0104451621100LL /* (DIR) */
 
+static word_t year;
+
 static char *tape_type (int n)
 {
   if (n == 0)
@@ -51,6 +53,7 @@ static word_t read_tape_header (FILE *f)
   word2 = get_word (f);
   printf ("TAPE NO %6lld ", (word >> 18) & 0777777);
   sixbit_to_ascii (word2, str);
+  year = 10*((word2>>30)-020) + ((word2>>24)&077)-020;
   printf ("CREATION DATE  %s\n", str);
   printf ("REEL NO %6lld ", word & 0777777);
   word = get_word (f);
@@ -112,8 +115,13 @@ static void read_directory (FILE *f, word_t old)
           //word &= 0177777777777LL;
           if (word == 0777777777777LL || word == 0400000000000LL)
             printf ("-");
-          else
+          else {
+            if ((word >> 27) < 2)
+              {
+                word |= (year&0776) << 27;
+              }
             print_datime (stdout, word);
+          }
           putchar ('\n');
         }
 
