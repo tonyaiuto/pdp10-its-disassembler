@@ -28,7 +28,6 @@
 #define AFE    0414645LL
 
 static word_t block[3740];
-static int mdays[] = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
 static int density;
 static int extract = 0;
 static int verbose = 0;
@@ -42,44 +41,13 @@ static char file_path[100];
 static struct timeval timestamp[2];
 static int first_file;
 
-static int
-february (int year)
-{
-  if (year < 1964 || year > 1999)
-    {
-      fprintf (stderr, "Anachronistic timestamp: year %d\n", year);
-      exit (1);
-    }
-
-  /* This is good for the range 1964-1999, which is all we care about. */
-  if ((year % 4) == 0)
-    return 29;
-  else
-    return 28;
-}
-
 static void
 compute_date (word_t word, int *year, int *month, int *day)
 {
-  *day = word & 037777;
-  *year = 1964;
-  *month = 0;
-
-  mdays[1] = february (*year);
-  for (;;)
-    {
-      if (*day < mdays[*month])
-	return;
-
-      *day -= mdays[*month];
-      (*month)++;
-      if (*month == 12)
-	{
-	  *month = 0;
-	  (*year)++;
-	  mdays[1] = february (*year);
-	}
-    }
+  word &= 037777;
+  *day = word % 31;
+  *month = (word / 31) % 12;
+  *year = (word / 31 / 12) + 1964;
 }
 
 static void
@@ -101,11 +69,11 @@ unix_time (struct timeval *tv, word_t word)
 static void
 print_timestamp (FILE *f, word_t word)
 {
-  int year, month, days;
+  int year, month, day;
   int minutes = (word >> 14) & 03777;
-  compute_date (word, &year, &month, &days);
+  compute_date (word, &year, &month, &day);
   fprintf (f, "%4d-%02d-%02d %02d:%02d",
-	   year, month + 1, days + 1,
+	   year, month + 1, day + 1,
 	   minutes / 60, minutes % 60);
 }
 
