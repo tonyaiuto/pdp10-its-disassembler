@@ -41,7 +41,7 @@ static word_t checksum;
 static char file_path[100];
 static struct timeval timestamp[2];
 static int dart;
-static int iover;
+static int iover = 2;
 
 static void
 compute_date (word_t date, int *year, int *month, int *day)
@@ -154,6 +154,25 @@ open_file (char *directory, char *name, char *ext)
 	     file_path, strerror (errno));
 }
 
+static word_t
+file_size (char *name)
+{
+  word_t size = 0;
+  FILE *f = fopen (name, "rb");
+  if (f == NULL)
+    {
+      fprintf (stderr, "Error opening input file %s: %s\n",
+	       name, strerror (errno));
+      exit (1);
+    }
+
+  while (get_word (f) != -1)
+    size++;
+  fclose (f);
+  fprintf (info, "File %s size: %lld\n", size);
+  return size;
+}
+
 static void
 write_block (word_t *data, int size)
 {
@@ -201,6 +220,17 @@ read_start (FILE *f, int length)
   print_timestamp (list, date, minutes);
   //fprintf (list, " [%ld]", ftell (f));
   fputc ('\n', list);
+
+  //block[006] ddloc location of first block
+  //block[007] ddlng, file length
+  //block[010] dreftm, referenced
+  //block[011] ddmptm, dump status
+  //block[012] dgrp1r, group 1
+  //block[013] dnxtgp, next group
+  //block[014] dsatid, SAT ID
+  //block[015] dqinfo, login
+  if (iover >= 2)
+    fprintf (info, "Record offset: %012llo\n", block[021]);
 
   if (extract)
     {
@@ -342,8 +372,11 @@ read_record (FILE *f, word_t word)
 }
 
 static void
-process_tape (FILE *f)
+read_tape (FILE *f, int argc, char **argv)
 {
+  if (f == NULL)
+    f = stdin;
+
   word_t word = get_word (f);
   if (word == -1)
     {
@@ -355,9 +388,136 @@ process_tape (FILE *f)
 }
 
 static void
+write_header (FILE *f, word_t type)
+{
+  write_word (f, dart << 18 | 5 | START_FILE);
+  write_word (f, DART);
+  write_word (f, type);
+  write_word (f, 0); // tape timestamp
+  write_word (f, ascii_to_sixbit ("DMPSYS"));
+  write_word (f, 0 | 0);
+
+  if (iover < 3)
+    return;
+}
+
+static int
+read_block (FILE *f, word_t *data)
+{
+  int i, n, max, size = 0;
+  word_t word;
+
+  max = iover < 3 ? 1280 : 10240;
+  max--;
+
+  n = iover < 3 ? 022 : 043;
+  for (i = 0; i < n; i++)
+    checksum ^= data[i];
+
+  for (i = n; i < max; i++)
+    {
+      word = get_word (f);
+      if (word == -1)
+	return size;
+      checksum ^= word;
+      *data++ = word;
+      size++;
+    }
+  
+  return size;
+}
+
+static void
+write_data (FILE *f, FILE *input, word_t start)
+{
+  int i, length;
+  checksum = 0;
+  length = read_block (input, block);
+  write_word (f, (01000000 - iover) << 18 | length | start);
+  for (i = 0; i < length; i++)
+    write_word (f, block[i]);
+  write_word (f, checksum);
+}
+
+static void
+write_file (FILE *f, char *name)
+{
+  FILE *input = fopen (name, "rb");
+  if (input == NULL)
+    {
+      fprintf (stderr, "Error opening input file %s: %s\n",
+	       name, strerror (errno));
+      return;
+    }
+
+  block[0] = ascii_to_sixbit ("DSK   ");
+  block[1] = ascii_to_sixbit (name);
+  block[2] = ascii_to_sixbit ("EXT   ");
+  block[3] = 0; //date
+  block[4] = ascii_to_sixbit ("PRJPRG");
+
+  block[005] = 0; //ddloc location of first block
+  block[006] = file_size (name);
+  block[007] = 0; //dreftm, referenced
+  block[010] = 0; //ddmptm, dump time
+  block[011] = 0; //dgrp1r, group 1
+  block[012] = 0; //dnxtgp, next group
+  block[013] = 0; //dsatid, SAT ID
+  block[014] = 0; //dqinfo, login
+  block[015] = block[016] = block[017] = 0;
+  if (iover == 1)
+    block[020] = 0;
+  else
+    block[020] = 1;
+
+  if (iover >=3 )
+    {
+      //block[021] = DART;
+      //block[022] = ascii_to_sixbit ("*FILE*");
+      //block[023] = time,date
+      //if (dart >= 5) block[024] |= bits 0-2
+      //block[024] = ppn of dumper
+      //block[025] = class,,tapno
+      //block[026] = relative,,absolute dump
+      //block[027] = tape position
+      block[030] = 0;
+      block[031] = 0777777777777;
+      block[032] = 0;
+      //block[033] = file words left
+      memset (block + 034, 0, 7 * sizeof (word_t));
+    }
+
+  write_data (f, input, START_FILE);
+  if (iover >=3 )
+    block[022] = ascii_to_sixbit ("CON   ") | iover;
+  while (!feof (input))
+    write_data (f, input, START_RECORD);
+  fclose (input);
+}
+
+static void
+write_tape (FILE *f, int argc, char **argv)
+{
+  int i;
+  struct word_format *tmp = input_word_format;
+  input_word_format = output_word_format;
+  output_word_format = tmp;
+
+  if (f == NULL)
+    f = stdout;
+
+  dart = 5;
+  write_header (f, HEAD);
+  for (i = 0; i < argc; i++)
+    write_file (f, argv[argc++]);
+  write_header (f, TAIL);
+  flush_word (f);
+}
+
+static void
 usage (const char *x)
 {
-  fprintf (stderr, "Usage: %s -t|-x [-v789] [-Wformat] [-f file]\n", x);
+  fprintf (stderr, "Usage: %s -c|-t|-x [-v789] [-Wformat] [-f file]\n", x);
   usage_word_format ();
   exit (1);
 }
@@ -365,51 +525,63 @@ usage (const char *x)
 int
 main (int argc, char **argv)
 {
-  FILE *f = NULL;
+  void (*process_tape) (FILE *, int, char **) = NULL;
+  char *tape_name = NULL, *mode;
+  FILE *f;
   int opt;
 
   input_word_format = &tape7_word_format;
   output_word_format = &aa_word_format;
 
-  if (argc == 1)
-    usage (argv[0]);
-
-  while ((opt = getopt (argc, argv, "tvx789f:W:")) != -1)
+  while ((opt = getopt (argc, argv, "ctvx789f:W:")) != -1)
     {
       switch (opt)
 	{
 	case 'f':
-	  if (f != NULL)
+	  if (tape_name != NULL)
 	    {
 	      fprintf (stderr, "Just one -f allowed.\n");
 	      exit (1);
 	    }
-	  f = fopen (optarg, "rb");
-	  if (f == NULL)
-	    {
-	      fprintf (stderr, "Error opening input %s: %s\n",
-		       optarg, strerror (errno));
-	      exit (1);
-	    }
+	  tape_name = optarg;
 	  break;
 	case 't':
-	  if (extract)
+	  if (process_tape != NULL)
 	    {
-	      fprintf (stderr, "Just one of -t or -x allowed.\n");
+	      fprintf (stderr, "Just one of -c, -t, or -x allowed.\n");
 	      exit (1);
 	    }
+	  process_tape = read_tape;
+	  mode = "rb";
 	  verbose++;
 	  break;
 	case 'v':
 	  verbose++;
 	  break;
 	case 'x':
-	  if (extract)
+	  if (process_tape != NULL)
 	    {
-	      fprintf (stderr, "Just one of -t or -x allowed.\n");
+	      fprintf (stderr, "Just one of -c, -t, or -x allowed.\n");
 	      exit (1);
 	    }
+	  process_tape = read_tape;
+	  mode = "rb";
 	  extract = 1;
+	  break;
+	case 'c':
+	  if (process_tape != NULL)
+	    {
+	      fprintf (stderr, "Just one of -c, -t, or -x allowed.\n");
+	      exit (1);
+	    }
+	  process_tape = write_tape;
+	  mode = "wb";
+	  break;
+	case '1':
+	case '2':
+	case '3':
+	  iover = opt - '0';
+	  dart = iover + 3;
 	  break;
 	case '7':
 	  input_word_format = &tape7_word_format;
@@ -429,8 +601,8 @@ main (int argc, char **argv)
 	}
     }
 
-  if (f == NULL)
-    f = stdin;
+  if (process_tape == NULL)
+    usage (argv[0]);
 
   list = info = stdout;
   if (verbose == 0)
@@ -438,7 +610,15 @@ main (int argc, char **argv)
   else if (verbose == 1)
     info = fopen ("/dev/null", "w");
 
-  process_tape (f);
+  f = fopen (tape_name, mode);
+  if (f == NULL)
+    {
+      fprintf (stderr, "Error opening input %s: %s\n",
+	       optarg, strerror (errno));
+      exit (1);
+    }
+
+  process_tape (f, argc - optind, &argv[optind]);
 
   return 0;
 }
